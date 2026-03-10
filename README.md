@@ -125,7 +125,3 @@ rag_in_a_box/
 ├── requirements.txt    # Python dependencies
 └── chroma_db/          # Vector database storage (created on first run)
 ```
-
-## License
-
-[Add your license here]
