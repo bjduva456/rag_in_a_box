@@ -1,0 +1,31 @@
+{
+    "chroma": {
+        "directory": "chroma_db",
+        "collection_name": "documents",
+        "space": "cosine"
+    },
+    "embedding": {
+        "model": "all-MiniLM-L6-v2"
+    },
+    "ingestion": {
+        "chunk_size": 500,
+        "chunk_overlap": 50,
+        "supported_extensions": [
+            ".txt",
+            ".md",
+            ".docx",
+            ".odt"
+        ]
+    },
+    "retrieval": {
+        "top_k": 15,
+        "max_results": 5,
+        "distance_threshold": 0.5
+    },
+    "llm": {
+        "base_url": "http://localhost:1234/v1",
+        "model_name": "openai/gpt-oss-20b",
+        "temperature": 0.3,
+        "max_tokens": 2048
+    }
+}

@@ -7,16 +7,56 @@ import sys
 from pathlib import Path
 
 import chromadb
+import pathspec
 from sentence_transformers import SentenceTransformer
 
+from config import load_config, get_chroma_dir, get_ragignore_path, get_raginclude_path
 from readers import read_file, SUPPORTED_EXTENSIONS
 
-# --- Configuration ---
-CHROMA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
-COLLECTION_NAME = "documents"
-CHUNK_SIZE = 500  # characters
-CHUNK_OVERLAP = 50  # characters
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# --- Load configuration ---
+_config = load_config()
+CHROMA_DIR = get_chroma_dir()
+COLLECTION_NAME = _config["chroma"]["collection_name"]
+CHROMA_SPACE = _config["chroma"]["space"]
+CHUNK_SIZE = _config["ingestion"]["chunk_size"]
+CHUNK_OVERLAP = _config["ingestion"]["chunk_overlap"]
+EMBEDDING_MODEL = _config["embedding"]["model"]
+RAGIGNORE_FILE = get_ragignore_path()
+RAGINCLUDE_FILE = get_raginclude_path()
+
+
+def load_ragignore() -> pathspec.PathSpec:
+    """Load patterns from .ragignore file (blacklist).
+    
+    Returns a PathSpec object for matching against paths.
+    If .ragignore doesn't exist, returns an empty PathSpec.
+    """
+    if not os.path.exists(RAGIGNORE_FILE):
+        print(f"Warning: {RAGIGNORE_FILE} not found. No patterns will be ignored.")
+        return pathspec.PathSpec.from_lines('gitwildmatch', [])
+    
+    with open(RAGIGNORE_FILE, 'r', encoding='utf-8') as f:
+        patterns = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+    
+    return pathspec.PathSpec.from_lines('gitwildmatch', patterns)
+
+
+def load_raginclude() -> pathspec.PathSpec | None:
+    """Load patterns from .raginclude file (whitelist).
+    
+    Returns a PathSpec object for matching against paths, or None if the file
+    doesn't exist or is empty. If whitelist exists, only matching files are included.
+    """
+    if not os.path.exists(RAGINCLUDE_FILE):
+        return None
+    
+    with open(RAGINCLUDE_FILE, 'r', encoding='utf-8') as f:
+        patterns = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+    
+    if not patterns:
+        return None
+    
+    return pathspec.PathSpec.from_lines('gitwildmatch', patterns)
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -55,26 +95,33 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     return chunks
 
 
-#TODO: use .gitignore-like file to specify skip patterns, and support globs (e.g. "data/**/*.pdf")
-SKIP_DIRS = {
-    ".venv", "venv", "env",          # Python virtual environments
-    "node_modules",                   # Node.js dependencies
-    "site-packages", "dist-info",     # installed package trees
-    "__pycache__",                    # bytecode cache
-    ".git", ".svn", ".hg",           # version control internals
-}
-
-
-def scan_directories(paths: list[str]) -> list[str]:
-    """Recursively find all supported files in the given directories."""
+def scan_directories(paths: list[str], ignore_spec: pathspec.PathSpec, include_spec: pathspec.PathSpec | None) -> list[str]:
+    """Recursively find all supported files in the given directories.
+    
+    Args:
+        paths: List of directories to scan
+        ignore_spec: PathSpec for blacklist patterns (files to exclude)
+        include_spec: Optional PathSpec for whitelist patterns (files to include).
+                      If provided, only files matching this will be included.
+    
+    Skips files and directories based on .ragignore (and .raginclude if present).
+    """
     files = []
     for dir_path in paths:
         for root, dirs, filenames in os.walk(dir_path):
-            # Prune subtrees we never want to descend into
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            # Prune subtrees matching ignore patterns
+            dirs[:] = [d for d in dirs if not ignore_spec.match_file(os.path.join(root, d))]
             for fname in filenames:
+                file_path = os.path.join(root, fname)
+                # Check if file matches ignore patterns
+                if ignore_spec.match_file(file_path):
+                    continue
+                # If whitelist exists, file must match it
+                if include_spec and not include_spec.match_file(file_path):
+                    continue
+                # Check file extension
                 if Path(fname).suffix.lower() in SUPPORTED_EXTENSIONS:
-                    files.append(os.path.join(root, fname))
+                    files.append(file_path)
     return sorted(files)
 
 
@@ -92,10 +139,14 @@ def ingest(paths: list[str]):
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": CHROMA_SPACE},
     )
 
-    files = scan_directories(paths)
+    ignore_spec = load_ragignore()
+    include_spec = load_raginclude()
+    if include_spec:
+        print("Whitelist (.raginclude) is active - only matching files will be included.")
+    files = scan_directories(paths, ignore_spec, include_spec)
     print(f"Found {len(files)} supported files.\n")
 
     added, skipped, updated = 0, 0, 0

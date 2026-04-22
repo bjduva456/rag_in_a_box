@@ -3,7 +3,11 @@
 import os
 from pathlib import Path
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".odt"}
+from config import load_config
+
+# Load supported extensions from config
+_config = load_config()
+SUPPORTED_EXTENSIONS = set(_config["ingestion"]["supported_extensions"])
 
 
 def read_txt(file_path: str) -> str:

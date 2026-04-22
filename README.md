@@ -5,10 +5,13 @@ A lightweight, self-contained Retrieval-Augmented Generation (RAG) system that l
 ## Features
 
 - **Document Support**: Ingest `.txt`, `.md`, `.docx`, and `.odt` files
-- **Vector Search**: Retrieve relevant document chunks using semantic similarity
+- **Smart Filtering**: Control ingestion with `.ragignore` (blacklist) and `.raginclude` (whitelist) files
+- **Enhanced Semantic Search**: Query expansion, keyword extraction, and multi-stage retrieval for better relevance
+- **Vector Search**: Retrieve relevant document chunks using semantic similarity with distance-based filtering
 - **Local LLM**: Works with LM Studio for completely private inference
-- **Web UI**: User-friendly Gradio interface for querying
-- **Conversation History**: Chat interface remembers previous messages for context
+- **Web UI**: User-friendly Gradio interface with conversation history
+- **Conversation Context**: Chat interface uses conversation history to improve relevance of retrieved documents
+- **Centralized Configuration**: All settings in one `config.json` file
 
 ## Prerequisites
 
@@ -80,13 +83,100 @@ Type your questions in the chat interface. The system will:
 
 ## Configuration
 
-Edit the configuration variables in `app.py` and `ingest.py` to customize:
+All configuration is managed through `config.json` in the project root. Edit this file to customize:
 
-- `CHUNK_SIZE`: Size of document chunks (default: 500 characters)
-- `CHUNK_OVERLAP`: Overlap between chunks (default: 50 characters)
-- `TOP_K`: Number of chunks to retrieve (default: 5)
-- `EMBEDDING_MODEL`: Sentence Transformer model (default: `all-MiniLM-L6-v2`)
-- `LM_STUDIO_URL`: LM Studio API endpoint (default: `http://localhost:1234/v1`)
+### config.json Structure
+
+```json
+{
+  "chroma": {
+    "directory": "chroma_db",
+    "collection_name": "documents",
+    "space": "cosine"
+  },
+  "embedding": {
+    "model": "all-MiniLM-L6-v2"
+  },
+  "ingestion": {
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "supported_extensions": [".txt", ".md", ".docx", ".odt"]
+  },
+  "retrieval": {
+    "top_k": 50,
+    "max_results": 20,
+    "distance_threshold": 0.5
+  },
+  "llm": {
+    "base_url": "http://localhost:1234/v1",
+    "model_name": "openai/gpt-oss-20b",
+    "temperature": 0.5,
+    "max_tokens": 4096
+  }
+}
+```
+
+### Configuration Guide
+
+#### ChromaDB Settings
+- `directory`: Path to ChromaDB storage (relative to project root)
+- `collection_name`: Name of the document collection
+- `space`: Similarity metric ("cosine", "l2", or "ip")
+
+#### Embedding
+- `model`: Sentence Transformer model for embeddings
+
+#### Ingestion
+- `chunk_size`: Document chunk size in characters
+- `chunk_overlap`: Overlap between chunks to preserve context
+- `supported_extensions`: File types to ingest
+
+#### Retrieval (Semantic Search)
+- `top_k`: Number of candidates to retrieve initially (higher = more thorough but slower)
+- `max_results`: Maximum results to return after filtering and re-ranking
+- `distance_threshold`: Maximum distance for semantic similarity (0 = exact, 1 = any)
+
+#### LLM (Language Model)
+- `base_url`: LM Studio API endpoint
+- `model_name`: Model identifier for LM Studio
+- `temperature`: Model creativity (0.0 = deterministic, 1.0 = creative)
+- `max_tokens`: Maximum response length
+
+### File Filtering
+
+#### `.ragignore` (Blacklist)
+Create a `.ragignore` file to exclude files and directories, similar to `.gitignore`. Patterns use gitignore syntax with support for wildcards and globs.
+
+**Example:**
+```
+# Exclude directories
+node_modules
+.venv
+venv
+
+# Exclude file types
+*.pdf
+*.zip
+
+# Exclude specific files
+.DS_Store
+```
+
+#### `.raginclude` (Whitelist)
+Create a `.raginclude` file to explicitly include only matching files. This takes precedence over supported extensions.
+
+**Example:**
+```
+# Only include markdown and text files
+*.md
+*.txt
+
+# Include specific directories
+docs/
+README*
+```
+
+**Note**: If `.raginclude` exists with patterns, only files matching those patterns will be included (still subject to `.ragignore` exclusions).
 
 ## Supported File Formats
 
@@ -97,11 +187,25 @@ Edit the configuration variables in `app.py` and `ingest.py` to customize:
 
 ## How It Works
 
-1. **Ingestion**: Documents are split into chunks with configurable overlap to preserve context
-2. **Embedding**: Each chunk is converted to a dense vector using a pre-trained model
-3. **Storage**: Vectors and metadata are stored in ChromaDB with cosine similarity indexing
-4. **Retrieval**: User queries are embedded and matched against stored chunks
-5. **Generation**: Top-k chunks are sent to an LLM with system instructions for context-aware answers
+### Ingestion Pipeline
+1. **File Scanning**: Recursively scans directories, filtering based on `.ragignore` (blacklist) and `.raginclude` (whitelist) patterns
+2. **Text Extraction**: Reads supported file formats and extracts text content
+3. **Chunking**: Splits documents into overlapping chunks to preserve context (configurable size and overlap)
+4. **Embedding**: Converts each chunk to a dense vector using Sentence Transformers
+5. **Storage**: Stores vectors and metadata in ChromaDB with configurable similarity metric
+
+### Retrieval and Ranking
+1. **Query Expansion**: Automatically adds synonyms to your query (e.g., "neural" → "deep learning", "AI", "ml")
+2. **Semantic Search**: Embeds your query and retrieves candidate chunks from ChromaDB
+3. **Distance Filtering**: Filters results by semantic similarity threshold
+4. **Keyword Scoring**: Re-ranks results by matching query keywords in the text
+5. **Ranking**: Sorts by keyword score (most relevant) then by distance (similarity)
+6. **Context Awareness**: Uses recent conversation history to improve retrieval for follow-up questions
+
+### Generation
+1. **System Prompt**: Constructs a prompt with retrieved chunks and relevance scores
+2. **LLM Call**: Sends context and your question to the local LLM
+3. **Response**: Returns the answer with source citations and relevance indicators
 
 ## Troubleshooting
 
@@ -110,18 +214,27 @@ Edit the configuration variables in `app.py` and `ingest.py` to customize:
 
 **Connection refused to LM Studio**
 - Make sure LM Studio is running and the server is started (port 1234)
-- Check that `LM_STUDIO_URL` in `app.py` matches your LM Studio configuration
+- Check that `llm.base_url` in `config.json` matches your LM Studio configuration
 
 **Slow ingestion**
-- Reduce `CHUNK_SIZE` or skip large directories by moving them out of the scan path
+- Reduce `ingestion.chunk_size` in `config.json` or skip large directories using `.ragignore`
+
+**Specific topics not showing up in results**
+- Try rephrasing your question with different keywords
+- Increase `retrieval.top_k` in `config.json` to retrieve more candidates
+- Lower `retrieval.distance_threshold` to include more loosely related results (default: 0.5)
 
 ## Project Structure
 
 ```
 rag_in_a_box/
-├── app.py              # Gradio web UI
+├── app.py              # Gradio web UI and retrieval logic
 ├── ingest.py           # Document ingestion pipeline
 ├── readers.py          # File format readers
+├── config.py           # Configuration loader
+├── config.json         # Central configuration file
+├── .ragignore          # Blacklist patterns (gitignore style)
+├── .raginclude         # Whitelist patterns (gitignore style)
 ├── requirements.txt    # Python dependencies
 └── chroma_db/          # Vector database storage (created on first run)
 ```
